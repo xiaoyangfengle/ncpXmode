@@ -1,24 +1,24 @@
-#ifndef NCP_H_ 
-#define NCP_H_ 
+#ifndef NCP_H_
+#define NCP_H_
 
 #include <stdlib.h>
 
 #include <stdio.h>
- 
+
 #include <string.h>
- 
+
 #include <errno.h>
- 
+
 #include <unistd.h>
- 
+
 #include <sys/types.h>
- 
+
 #include <sys/stat.h>
- 
+
 #include <fcntl.h>
- 
+
 #include <termios.h>
- 
+
 #include <unistd.h>
 
 #include <stdbool.h>
@@ -36,6 +36,6 @@ bool emAfBootloadSendByte(uint8_t byte);
 bool emAfBootloadWaitChar(uint8_t *data, bool expect, uint8_t expected);
 bool emberAfOtaBootloadCallback();
 
- int uart_init();
+int uart_init();
 
 #endif

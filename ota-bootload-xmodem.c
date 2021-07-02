@@ -61,139 +61,157 @@ static int blockNum;
 
 uint16_t halCommonCrc16(uint8_t byte, uint16_t crc)
 {
-  crc = (crc >> 8) | (crc << 8);
-  crc ^= byte;
-  crc ^= (crc & 0xff) >> 4;
-  crc ^= (crc << 8) << 4;
+    crc = (crc >> 8) | (crc << 8);
+    crc ^= byte;
+    crc ^= (crc & 0xff) >> 4;
+    crc ^= (crc << 8) << 4;
 
-  crc ^= ((uint8_t) ((uint8_t) ((uint8_t) (crc & 0xff)) << 5))
-         | ((uint16_t) ((uint8_t) ((uint8_t) (crc & 0xff)) >> 3) << 8);
+    crc ^= ((uint8_t) ((uint8_t) ((uint8_t) (crc & 0xff)) << 5))
+           | ((uint16_t) ((uint8_t) ((uint8_t) (crc & 0xff)) >> 3) << 8);
 
-  return crc;
+    return crc;
 }
 
 
 static bool sendBlock(uint8_t blockNum, const uint8_t *data)
 {
-  int i;
-  int retry = 5;
-  uint16_t crc = 0;
-  uint8_t status = NAK;
-  uint8_t fullBlock[FULL_BLOCK_SIZE];
+    int i;
+    int retry = 5;
+    uint16_t crc = 0;
+    uint8_t status = NAK;
+    uint8_t fullBlock[FULL_BLOCK_SIZE];
 
-  fullBlock[CONTROL_OFFSET] = SOH;
-  fullBlock[BLOCK_NUM_OFFSET] = blockNum;
-  fullBlock[BLOCK_COMP_OFFSET] = ~blockNum;
-  
-  for (i = 0; i < DATA_SIZE; i++) {
-    crc = halCommonCrc16(data[i], crc); //crc    
-    fullBlock[DATA_OFFSET + i] = data[i];
-  }
+    fullBlock[CONTROL_OFFSET] = SOH;
+    fullBlock[BLOCK_NUM_OFFSET] = blockNum;
+    fullBlock[BLOCK_COMP_OFFSET] = ~blockNum;
+
+    for (i = 0; i < DATA_SIZE; i++)
+    {
+        crc = halCommonCrc16(data[i], crc); //crc
+        fullBlock[DATA_OFFSET + i] = data[i];
+    }
 
     fullBlock[CRC_H_OFFSET] = HIGH_BYTE(crc);
     fullBlock[CRC_L_OFFSET] = LOW_BYTE(crc);
 
-  while ( (status == NAK) && (retry > 0) ) {
-    //print "block %d (" % num,
-    //for i in range(0,len(data)):
-    //  print "%02x" % ord(data[i]),
-    if (!emAfBootloadSendData(fullBlock, FULL_BLOCK_SIZE)) {
-      printf("sendBlock() fail 1\n");
-      return false;
+    while ( (status == NAK) && (retry > 0) )
+    {
+        //print "block %d (" % num,
+        //for i in range(0,len(data)):
+        //  print "%02x" % ord(data[i]),
+        if (!emAfBootloadSendData(fullBlock, FULL_BLOCK_SIZE))
+        {
+            printf("sendBlock() fail 1\n");
+            return false;
+        }
+        retry--;
+        if (!emAfBootloadWaitChar(&status, false, 0))
+        {
+            printf("sendBlock() fail 2\n");
+            return false;
+        }
+        while ( status == 'C' )
+        {
+            // may have leftover C characters from start of transmission
+            if (!emAfBootloadWaitChar(&status, false, 0))
+            {
+                printf("sendBlock() fail 3\n");
+                return false;
+            }
+        }
     }
-    retry--;
-    if (!emAfBootloadWaitChar(&status, false, 0)) {
-      printf("sendBlock() fail 2\n");
-      return false;
-    }
-    while ( status == 'C' ) {
-      // may have leftover C characters from start of transmission
-      if (!emAfBootloadWaitChar(&status, false, 0)) {
-        printf("sendBlock() fail 3\n");
-        return false;
-      }
-    }
-  }
 
-  return (status == ACK);
+    return (status == ACK);
 }
 
 void emAfInitXmodemState(bool startImmediately)
 {
-  if (startImmediately) {
-    // skip checking for 'C' characters
-    state = SENDING;
-  } else {
-    state = START_TRANSMISSION;
-  }
+    if (startImmediately)
+    {
+        // skip checking for 'C' characters
+        state = SENDING;
+    }
+    else
+    {
+        state = START_TRANSMISSION;
+    }
 
-  buffFinger = 0;
-  blockNum = 1;
+    buffFinger = 0;
+    blockNum = 1;
 }
 
 bool emAfSendXmodemData(const uint8_t *data, int length, bool finished)
 {
-  printf("emAfSendXmodemData length:%d \n",length);
-  uint8_t rxData;
-  int i;
+    printf("emAfSendXmodemData length:%d \n",length);
+    uint8_t rxData;
+    int i;
 
-  if (state == START_TRANSMISSION) {
-    sleep(1);
-    if (emAfBootloadWaitChar(&rxData, true, 'C')) {
-      printf("sending\n");
-      state = SENDING;
-    } else {
-      printf("NoC\n");
-      return false;
-    }
-  }
-
-  if (state == SENDING) 
-  {
-    for (i = 0; i < length; i++) 
+    if (state == START_TRANSMISSION)
     {
-      dataBuff[buffFinger++] = data[i];
-      if (buffFinger >= DATA_SIZE) 
-      {
-	usleep(100);
-        printf("block start %d %d\n", blockNum,i);        //fsync();
-        if (!sendBlock(blockNum, dataBuff)) 
+        sleep(1);
+        if (emAfBootloadWaitChar(&rxData, true, 'C'))
         {
-          printf("sendblock err\n");
-         // emberAfCoreFlush();
-          return false;
-        } 
-        buffFinger = 0;
-        blockNum++;
-      }
+            printf("sending\n");
+            state = SENDING;
+        }
+        else
+        {
+            printf("NoC\n");
+            return false;
+        }
     }
-    printf("buffFinger :%d\n",buffFinger);
-    printf("finished :%d\n",finished);
-    if ( finished ) 
+
+    if (state == SENDING)
     {
-      if ( buffFinger != 0) {
-        // pad and send final block
-        bool result;
-        while (buffFinger < DATA_SIZE) {
-          dataBuff[buffFinger++] = 0xFF;
+        for (i = 0; i < length; i++)
+        {
+            dataBuff[buffFinger++] = data[i];
+            if (buffFinger >= DATA_SIZE)
+            {
+                usleep(100);
+                printf("block start %d %d\n", blockNum,i);        //fsync();
+                if (!sendBlock(blockNum, dataBuff))
+                {
+                    printf("sendblock err\n");
+                    // emberAfCoreFlush();
+                    return false;
+                }
+                buffFinger = 0;
+                blockNum++;
+            }
         }
-        printf("final block %d\n", blockNum);
-        result = sendBlock(blockNum, dataBuff);
-        if (!result) {
-          return false;
+        printf("buffFinger :%d\n",buffFinger);
+        printf("finished :%d\n",finished);
+        if ( finished )
+        {
+            if ( buffFinger != 0)
+            {
+                // pad and send final block
+                bool result;
+                while (buffFinger < DATA_SIZE)
+                {
+                    dataBuff[buffFinger++] = 0xFF;
+                }
+                printf("final block %d\n", blockNum);
+                result = sendBlock(blockNum, dataBuff);
+                if (!result)
+                {
+                    return false;
+                }
+            }
+            //printf("EOT\n", blockNum);
+            emAfBootloadSendByte(EOT);
+            if (!emAfBootloadWaitChar(&rxData, true, ACK))
+            {
+                printf("NoEOTAck\n");
+                return false;
+            }
         }
-      }
-      //printf("EOT\n", blockNum);
-      emAfBootloadSendByte(EOT);
-      if (!emAfBootloadWaitChar(&rxData, true, ACK)) {
-        printf("NoEOTAck\n");
-        return false;
-      }
     }
-  } 
-  else {
-    printf("badstate\n");
-    return false;
-  }
-  return true;
+    else
+    {
+        printf("badstate\n");
+        return false;
+    }
+    return true;
 }

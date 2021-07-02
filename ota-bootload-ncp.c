@@ -48,28 +48,29 @@ static bool transferFile();
 
 bool emberAfOtaBootloadCallback()
 {
-  bool success = true;
+    bool success = true;
 
-  printf("Starting bootloader communications.\r\n");
-  //emberAfCoreFlush();
-  if (!emAfStartNcpBootloaderCommunications()) {
-    success = false;
-    printf("Failed to start bootloading communications\n");
-    return -1;
-  } 
-  else 
-  {
-    // send all images with matching tag Id
-    success = transferFile(); //传输文件
+    printf("Starting bootloader communications.\r\n");
+    //emberAfCoreFlush();
+    if (!emAfStartNcpBootloaderCommunications())
+    {
+        success = false;
+        printf("Failed to start bootloading communications\n");
+        return -1;
+    }
+    else
+    {
+        // send all images with matching tag Id
+        success = transferFile(); //传输文件
 
-    // Regardless of success or failure we reboot the NCP in hopes
-    // of returning the system back to its previous state.
+        // Regardless of success or failure we reboot the NCP in hopes
+        // of returning the system back to its previous state.
 
-    // Use &= here to preserve the possible failed status returned
-    // by transferFile()
-    success &= emAfRebootNcpAfterBootload();
-  }
-  return success;
+        // Use &= here to preserve the possible failed status returned
+        // by transferFile()
+        success &= emAfRebootNcpAfterBootload();
+    }
+    return success;
 }
 static int read_data(char **result,char *fileName,int *length)
 {
@@ -79,53 +80,54 @@ static int read_data(char **result,char *fileName,int *length)
 
     if((fileName==NULL)||(result==NULL))
     {
-		  printf("read_data fail\n");
+        printf("read_data fail\n");
         return 0;
     }
 
 
     if(!(filePointer=fopen(fileName,"rb ")))
     {
-		printf("read_data open file fail\n");
-		return 0;
-	}
+        printf("read_data open file fail\n");
+        return 0;
+    }
 
-  stat(fileName,&fileInfo);
-  //printf("read_data  file size %d\n",fileInfo.st_size);
-  *length = fileInfo.st_size;
-  fileDate = malloc(sizeof(char)*(fileInfo.st_size+1));
-  fread(fileDate,sizeof(char),fileInfo.st_size,filePointer);
-  fclose(filePointer);
-  fileDate[fileInfo.st_size]=0;
+    stat(fileName,&fileInfo);
+    //printf("read_data  file size %d\n",fileInfo.st_size);
+    *length = fileInfo.st_size;
+    fileDate = malloc(sizeof(char)*(fileInfo.st_size+1));
+    fread(fileDate,sizeof(char),fileInfo.st_size,filePointer);
+    fclose(filePointer);
+    fileDate[fileInfo.st_size]=0;
 
-  // printf("\n%s\n",fileDate);
-  *result=fileDate;
-  return 1;
+    // printf("\n%s\n",fileDate);
+    *result=fileDate;
+    return 1;
 }
 static bool transferFile()
 {
-  printf("start transferFile\n");
-  char  * buf = NULL;
-  int length = 0;
-  if(read_data(&buf ,gbl_file ,&length) == 0)
-  {
-    printf("read_data fail \n");
-    return false;
-  }
-  else
-  {
-    printf("read_data success length:%d\n",length);
-  }
+    printf("start transferFile\n");
+    char  * buf = NULL;
+    int length = 0;
+    if(read_data(&buf,gbl_file,&length) == 0)
+    {
+        printf("read_data fail \n");
+        return false;
+    }
+    else
+    {
+        printf("read_data success length:%d\n",length);
+    }
 
-  emAfInitXmodemState(START_IMMEDIATELY);
+    emAfInitXmodemState(START_IMMEDIATELY);
 
-  if (!emAfSendXmodemData(buf,length,true)) 
-  { // finish?
-    printf("Failed to send data to NCP.");
-    //emberAfCoreFlush();
-    return false;
-  }
+    if (!emAfSendXmodemData(buf,length,true))
+    {
+        // finish?
+        printf("Failed to send data to NCP.");
+        //emberAfCoreFlush();
+        return false;
+    }
 
-  printf("Transfer completed successfully.");
-  return true;
+    printf("Transfer completed successfully.");
+    return true;
 }
