@@ -30,7 +30,7 @@ static const char menuPrompt[] = "BL >";
 
 // This is sized to be big enough to read "\r\nbegin upload\r\n"
 // with some additional extra fuzz.
-#define MAX_BYTES_WITHOUT_XMODEM_START  1000
+#define MAX_BYTES_WITHOUT_XMODEM_START  2000
 
 //------------------------------------------------------------------------------
 // Forward Declarations
@@ -50,6 +50,61 @@ static uint8_t ttydev[] = "/dev/ttyS17";
 
 //------------------------------------------------------------------------------
 
+// Config 0 (default) : EM2xx/EM3xx @ 115200 bps with RTS/CTS flow control
+#define ASH_HOST_CONFIG_DEFAULT                                                   \
+  {                                                                               \
+    "/dev/ttyS17",       /* serial port name                                  */   \
+    38400,             /* baud rate (bits/second)                           */   \
+    1,                  /* stop bits                                         */   \
+    false,               /* true enables RTS/CTS flow control, false XON/XOFF */   \
+    256,                /* max bytes to buffer before writing to serial port */   \
+    256,                /* max bytes to read ahead from serial port          */   \
+    0,                  /* trace output control bit flags                    */   \
+    3,                  /* max frames sent without being ACKed (1-7)         */   \
+    true,               /* enables randomizing DATA frame payloads           */   \
+    800,                /* adaptive rec'd ACK timeout initial value          */   \
+    400,                /*  "     "     "     "     "  minimum value         */   \
+    2400,               /*  "     "     "     "     "  maximum value         */   \
+    2500,               /* time allowed to receive RSTACK after ncp is reset */   \
+    0,        /* if free buffers < limit, host receiver isn't ready */  \
+    12,        /* if free buffers > limit, host receiver is ready   */   \
+    480,                /* time until a set nFlag must be resent (max 2032)  */   \
+    0, /* method used to reset ncp                          */ \
+    0 /* type of ncp processor                         */  \
+  }
+
+#define ASH_PORT_LEN              40  /*!< length of serial port name string */
+
+
+/** @brief Configuration parameters: values must be defined before calling ashResetNcp()
+ * or ashStart(). Note that all times are in milliseconds.
+ */
+typedef struct
+{
+    char serialPort[ASH_PORT_LEN];  /*!< serial port name */
+    uint32_t baudRate;      /*!< baud rate (bits/second) */
+    uint8_t  stopBits;      /*!< stop bits */
+    uint8_t  rtsCts;        /*!< true enables RTS/CTS flow control, false XON/XOFF */
+    uint16_t outBlockLen;   /*!< max bytes to buffer before writing to serial port */
+    uint16_t inBlockLen;    /*!< max bytes to read ahead from serial port */
+    uint8_t  traceFlags;    /*!< trace output control bit flags */
+    uint8_t  txK;           /*!< max frames sent without being ACKed (1-7) */
+    uint8_t  randomize;     /*!< enables randomizing DATA frame payloads */
+    uint16_t ackTimeInit;   /*!< adaptive rec'd ACK timeout initial value */
+    uint16_t ackTimeMin;    /*!< adaptive rec'd ACK timeout minimum value */
+    uint16_t ackTimeMax;    /*!< adaptive rec'd ACK timeout maximum value */
+    uint16_t timeRst;       /*!< time allowed to receive RSTACK after ncp is reset */
+    uint8_t  nrLowLimit;    /*!< if free buffers < limit, host receiver isn't ready */
+    uint8_t  nrHighLimit;   /*!< if free buffers > limit, host receiver is ready */
+    uint16_t nrTime;        /*!< time until a set nFlag must be resent (max 2032) */
+    uint8_t  resetMethod;   /*!< method used to reset ncp */
+    uint8_t  ncpType;       /*!< type of ncp processor */
+} AshHostConfig;
+
+// Host configuration structure
+AshHostConfig ashHostConfig = ASH_HOST_CONFIG_DEFAULT;
+
+
 bool emAfStartNcpBootloaderCommunications(void)
 {
     serialFd = NULL_FILE_DESCRIPTOR;
@@ -57,65 +112,28 @@ bool emAfStartNcpBootloaderCommunications(void)
     int tryTimes = 1;
     bool ret = false;
 
-    printf("Setting up serial port\n");
-    if (0 != uart_init())
+    printf("emAfStartNcpBootloaderCommunications\r\n");
+
+    if (!uart_init())
     {
-        //  建立串口连接 ！！
         printf("Error: Could not setup serial port\r\n");
+		return false;
     }
 
-    /* do
-     {
-          sleep(1);
-         if (!checkForBootloaderMenu()) {  //发送0xoa  等待返回"BL >";
-         errorPrint("Failed to connnect bootloader.\n");
-           continue;
-         }
-         else
-         {
-             break;
-         }
-     }while(tryTimes--);
-    */
-    // // while (checkFdForData()>0/* condition */)
-    // {
-    //     uint8_t data;
-    //     ssize_t bytes = read(serialFd, &data, 1);
-    //     printf("%c\n", (char)data);
-    // }
 
-    tryTimes = 5;
-// uint8_t len = write(serialFd, "aaa",3);
-//	fsync(serialFd);
-//	printf("len:%d\r\n",len);
-    do
+    if(!emAfBootloadSendByte(beginDownload))   //发送‘1’；
     {
-        if(!emAfBootloadSendByte(beginDownload))   //发送‘1’；
-        {
-            errorPrint("Failed to set bootloader in download mode.\n");
-            continue;
-        }
-        if(checkForXmodemStart()) //等待ncp返回'C';
-        {
-            ret = true;
-            break;
-        }
-        else
-        {
-            continue;
-        }
+        errorPrint("Failed to set bootloader in download mode.\n");
+        return false;
     }
-    while(tryTimes--);
+	
+    return checkForXmodemStart();
 
-    if(tryTimes >= 0)
-        printf("enter download model\r\n");
-
-    return ret;
 }
 
 static bool checkForXmodemStart(void)
 {
-    printf("checkForXmodemStart\n");
+    printf("checkForXmodemStart:wait CCCCCCCC\n");
     uint8_t bytesSoFar = 0;
     int startTimes=0;
     while (bytesSoFar < MAX_BYTES_WITHOUT_XMODEM_START)
@@ -162,9 +180,9 @@ bool emAfBootloadSendData(const uint8_t *data, uint16_t length)
     //printf("emAfBootloadSendData lenght:%d\n",length);
     if (length != write(serialFd,
                         data,
-                        length))           // count
+                        length))  // count
     {
-        errorPrint("Error: Failed to write to serial port: %s",
+        errorPrint("Error: Failed to write to serial port: %s\r\n",
                    strerror(errno));
         return false;
     }
@@ -282,6 +300,145 @@ static void storeReceivedByte(uint8_t newByte)
 
 int init_tty(int fd)
 {
+    struct termios tios,checkTios;
+    uint8_t i ;
+    bool flowControl = 0;
+    bool rtsCts = ashHostConfig.rtsCts;
+    uint8_t stopBits = ashHostConfig.stopBits;
+    tcgetattr(fd, &tios);		 // get current serial port options
+    uint32_t baud = ashHostConfig.baudRate;      /*!< baud rate (bits/second) */
+    uint32_t bps = baud;
+
+    cfsetispeed(&tios, baud);
+    cfsetospeed(&tios, baud);
+
+    tios.c_cflag |= CLOCAL;				// ignore modem inputs
+    tios.c_cflag |= CREAD;				// receive enable (a legacy flag)
+    tios.c_cflag &= ~CSIZE;				// 8 data bits
+    tios.c_cflag |= CS8;
+    tios.c_cflag &= ~PARENB;				// no parity
+    if (stopBits == 1)
+    {
+        tios.c_cflag &= ~CSTOPB;
+    }
+    else
+    {
+        tios.c_cflag |= CSTOPB;
+    }
+    if (flowControl && rtsCts)
+    {
+        tios.c_cflag |= CRTSCTS;
+    }
+    else
+    {
+        tios.c_cflag &= ~CRTSCTS;
+    }
+
+    tios.c_iflag &= ~(BRKINT | INLCR | IGNCR | ICRNL | INPCK
+                      | ISTRIP | IMAXBEL | IXON | IXOFF | IXANY);
+
+    if (flowControl && !rtsCts)
+    {
+        tios.c_iflag |= (IXON | IXOFF); 		 // SW flow control
+    }
+    else
+    {
+        tios.c_iflag &= ~(IXON | IXOFF);
+    }
+
+    tios.c_lflag &= ~(ICANON | ECHO | IEXTEN | ISIG);  // raw input
+
+    tios.c_oflag &= ~OPOST;				// raw output
+
+    memset(tios.c_cc, _POSIX_VDISABLE, NCCS);  // disable all control chars
+    tios.c_cc[VSTART] = CSTART;			// define XON and XOFF
+    tios.c_cc[VSTOP] = CSTOP;
+
+    ////////////////////////////////////////////////////////////////////////////
+    // The POSIX standard states that when VMIN > 0 and VTIME == 0, read()
+    // is supposed to block if it cannot return VMIN bytes. In fact,
+    // if O_NONBLOCK is set, under Cygwin/WinXP read() does not block, but
+    // instead sets errno to EAGAIN and returns -1.
+    //
+    // It is possible that under certain Linux or Embedded Linux variants
+    // read() will block, and this code will have to be modified since
+    // EZSP cannot function reliably with blocking serial I/O.
+    //
+    // Some alternative approaches in that case would include:
+    //  o using Linux-specific ioctl()s
+    //  o using select() on the serial port
+    //  o spawning child processes to do serial I/O
+    ////////////////////////////////////////////////////////////////////////////
+
+    tios.c_cc[VMIN] = 1;
+    tios.c_cc[VTIME] = 0;
+
+    tcsetattr(fd, TCSAFLUSH, &tios);  // set EZSP serial port options
+    tcgetattr(fd, &checkTios);	   // and read back the result
+
+    // Verify that the fields written have the right values
+    i = (tios.c_cflag ^ checkTios.c_cflag) & CFLAG_MASK;
+    if (i)
+    {
+        // Try again since macOS mojave seems to not have hardware flow control enabled
+        tios.c_cflag &= ~CRTSCTS;
+        tcsetattr(fd, TCSAFLUSH, &tios);  // set EZSP serial port options
+        tcgetattr(fd, &checkTios); 	 // and read back the result
+        i = (tios.c_cflag ^ checkTios.c_cflag) & CFLAG_MASK;
+        if (i)
+        {
+            printf("Termios cflag(s) in error: 0x%04X\r\n", i);
+        }
+    }
+    i = (tios.c_iflag ^ checkTios.c_iflag) & IFLAG_MASK;
+    if (i)
+    {
+        printf("Termios iflag(s) in error: 0x%04X\r\n", i);
+    }
+    i = (tios.c_lflag ^ checkTios.c_lflag) & LFLAG_MASK;
+    if (i)
+    {
+        printf("Termios lflag(s) in error: 0x%04X\r\n", i);
+    }
+    i = (tios.c_oflag ^ checkTios.c_oflag) & OFLAG_MASK;
+    if (i)
+    {
+        printf("Termios oflag(s) in error: 0x%04X\r\n", i);
+    }
+    for (i = 0; i < NCCS; i++)
+    {
+        if (tios.c_cc[i] != checkTios.c_cc[i])
+        {
+            //break;
+        }
+    }
+    if (i != NCCS)
+    {
+        printf("Termios error at c_cc[%d]\r\n", i);
+    }
+    if (	(cfgetispeed(&checkTios) != baud)
+            || (cfgetospeed(&checkTios) != baud))
+    {
+        printf("Could not set baud rate to %d bps\r\n", bps);
+    }
+
+
+// Make sure the string is NULL terminated in case it got truncated.
+    //errorStringLocation[maxErrorLength - 1] = '\0';
+
+//    if (fd != NULL_FILE_DESCRIPTOR)
+//    {
+//        close(fd);
+//        fd = NULL_FILE_DESCRIPTOR;
+//    }
+
+    return 0;
+
+}
+
+
+int init_tty1(int fd)
+{
     struct termios termios_rfid;
 
     bzero(&termios_rfid, sizeof(termios_rfid));//清空结构体
@@ -318,53 +475,23 @@ int uart_init()
 {
     int rv = -1;
     struct termios options;
-    serialFd = open(ttydev,O_RDWR | O_NOCTTY ); //打开串口设备
+
+    serialFd = open(ttydev,O_RDWR | O_NOCTTY | O_NONBLOCK);
+
     if(serialFd < 0)
     {
-        printf("open COM failed: %s\n", strerror(errno));
+        printf("Serial port %s open failed: %s\n", ttydev,strerror(errno));
         return -1;
     }
-    printf("open devices sucessful!\n");
 
-    //memset(&options, 0, sizeof(options));
-    //rv = tcgetattr(serialFd, &options); //获取原有的串口属性的配置
-    //if(rv != 0)
-    //{
-    //	printf("tcgetattr() failed:%s\n",strerror(errno));
-    //	return -1;
-    //}
+    //tcflush(serialFd, TCIOFLUSH);       // flush all input and output data
+    //fcntl(serialFd, F_SETFL, FNDELAY);
 
-    if(init_tty(serialFd) == -1)//初始化串口
+    if(init_tty(serialFd) == -1)
     {
         printf("init_tty in failed!\n");
     }
-    return 0;
-    /*
-    	//options.c_cflag|=(CLOCAL|CREAD ); // CREAD 开启串行数据接收，CLOCAL并打开本地连接模式
-    	//options.c_cflag &=~CSIZE;// 先使用CSIZE做位屏蔽  
-    	//options.c_cflag |= CS8; //设置8位数据位
-    	//options.c_cflag &= ~PARENB; //无校验位
-    	cfsetispeed(&options, B115200);
-    	cfsetospeed(&options, B115200);
-    	options.c_cflag |= CLOCAL;               // ignore modem inputs
-        options.c_cflag |= CREAD;                // receive enable (a legacy flag)
-        options.c_cflag &= ~CSIZE;               // 8 data bits
-        options.c_cflag |= CS8;
-        options.c_cflag &= ~PARENB;              // no parity
-        options.c_lflag &= ~ (ICANON | ECHO | ECHOE | ISIG);
-        options.c_iflag &= ~(BRKINT | INLCR | IGNCR | ICRNL | INPCK
-                          | ISTRIP | IMAXBEL | IXON | IXOFF | IXANY);
-    	//tcflush(serialFd ,TCIFLUSH);
-    	// tcflush清空终端未完成的输入/输出请求及数据；TCIFLUSH表示清空正收到的数据，且不读取出来
-      	options.c_cflag |= (CLOCAL | CREAD);
-
-    	if((tcsetattr(serialFd, TCSANOW,&options))!=0)
-    	{
-    		printf("tcsetattr failed:%s\n", strerror(errno));
-    		return -1;
-    	}
-    	return 0;
-    */
+    return true;
 }
 
 static void delay(void)
