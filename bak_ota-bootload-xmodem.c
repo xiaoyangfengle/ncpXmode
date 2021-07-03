@@ -57,6 +57,11 @@ static int blockNum;
 #define HIGH_BYTE(n)                    ((uint8_t)(LOW_BYTE((n) >> 8)))
 
 
+/* The maximum number of times XMODEM tries to send a packet / control byte */
+#define MAX_RETRANSMIT (8)
+
+
+
 //------------------------------------------------------------------------------
 
 uint16_t halCommonCrc16(uint8_t byte, uint16_t crc)
@@ -94,7 +99,7 @@ static bool sendBlock(uint8_t blockNum, const uint8_t *data)
     fullBlock[CRC_H_OFFSET] = HIGH_BYTE(crc);
     fullBlock[CRC_L_OFFSET] = LOW_BYTE(crc);
 
-    while ( (status == NAK) && (retry > 0) )
+    while ( (status != ACK) && (retry > 0) )
     {
         //print "block %d (" % num,
         //for i in range(0,len(data)):
@@ -123,6 +128,48 @@ static bool sendBlock(uint8_t blockNum, const uint8_t *data)
 
     return (status == ACK);
 }
+
+
+/**
+ * Try to send an XMODEM packet for MAX_RETRANSMIT times.
+ *
+ * This function sends an XMODEM packet and checks if an ACK is received. If no
+ * ACK is received, the packet is retransmitted. This is done until
+ * 'MAX_RETRANSMIT' is exceeded.
+ *
+ * @param[in] data     The payload of the packet. Must not be null.
+ * @param[in] data_len The length of the payload. Must be at most 128 bytes.
+ *		       If less, (random) padding is automatically added.
+ * @param[in] pkt_no   The packet sequence number.
+ *
+ * @return Exit status.
+ * @retval 0  Success, the packet has been transmitted and an ACK received.
+ * @retval -1 Error, retransmit count exceeded.
+ */
+static int xmodem_send_pkt_with_retry(const uint8_t *data, size_t data_len,
+				      uint8_t pkt_no)
+{
+	uint8_t retransmit = MAX_RETRANSMIT;
+	uint8_t rsp;
+
+	printf("xmodem_send_pkt_with_retry(): pkt_no: %d\n", pkt_no);
+	while (retransmit--) {
+		xmodem_send_pkt(data, data_len, pkt_no);
+		rsp = ERR;
+		xmodem_io_getc(&rsp);
+		if (rsp == ACK) {
+			printf("xmodem_send_pkt_with_retry(): done\n");
+			return 0;
+		}
+		printf("xmodem_send_pkt_with_retry(): failure (%d)\n",
+		       retransmit);
+	}
+
+	return -1;
+}
+
+
+
 
 void emAfInitXmodemState(bool startImmediately)
 {
@@ -169,7 +216,7 @@ bool emAfSendXmodemData(const uint8_t *data, int length, bool finished)
             if (buffFinger >= DATA_SIZE)
             {
                 usleep(100);
-                printf("block start %d %d\n", blockNum,i);        //fsync();
+                printf("%d %d\n", blockNum,i);        //fsync();
                 if (!sendBlock(blockNum, dataBuff))
                 {
                     printf("sendblock err\n");

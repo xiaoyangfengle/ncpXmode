@@ -1,265 +1,476 @@
-#include "ota-bootload-ncp.h"
-
-/*-----------------------------------------------------------------------------------*/
-/* -----------------------------Target Dependent : code ---------------------------*/
-/*
- * This  blinks GPIO control.
+/**
+ * Copyright (c) 2017, Intel Corporation
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice,
+ * this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ * this list of conditions and the following disclaimer in the documentation
+ * and/or other materials provided with the distribution.
+ * 3. Neither the name of the Intel Corporation nor the names of its
+ * contributors may be used to endorse or promote products derived from this
+ * software without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE INTEL CORPORATION OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
  */
-#define IN  0
-#define OUT 1
 
-#define LOW  0
-#define HIGH 1
+#include <string.h>
 
-#define PINCONFIG  104 /* P1-18 */
-#define PINRESET 108  /* P1-07 */
-#define BUFFER_MAX 4 /*warning*/
+//#include "fw-manager_utils.h"
+#include "xmodem.h"
+//#include "xmodem_io.h"
+#include "crc16.h"
+#include "crc16.h"
+#include "ota-bootload-ncp-uart.h"
 
 
-static int GPIOExport(int pin)
+/* The maximum number of times XMODEM tries to send a packet / control byte */
+#define MAX_RETRANSMIT (8)
+/* The maximum number of consecutive RX errors XMODEM tolerates */
+#define MAX_RX_ERRORS (5)
+
+/* Custom value, not transferred via XMODEM, but used as return codes */
+#define ERR (0xFF)
+#define DUP (0xFE)
+
+/* XMODEM control bytes */
+#define SOH (0x01)
+#define EOT (0x04)
+#define ACK (0x06)
+#define NAK (0x15)
+#define CAN (0x18)
+
+/* XMODEM block size */
+#define PACKET_PAYLOAD_SIZE (XMODEM_BLOCK_SIZE)
+
+/* Activate debug messages by defining DEBUG_MSG to 1 */
+#define DEBUG_MSG (0)
+
+#if DEBUG_MSG
+#define printd(...) printf(__VA_ARGS__)
+#else
+#define printd(...)
+#endif
+
+/**
+ * The XMODEM packet buffer.
+ *
+ * This buffer is used for both incoming and outgoing packets.
+ */
+static struct __attribute__((__packed__)) xmodem_packet {
+	uint8_t soh;
+	uint8_t seq_no;
+	uint8_t seq_no_inv;
+	uint8_t data[PACKET_PAYLOAD_SIZE];
+	uint8_t crc_u8[2];
+} pkt_buf;
+
+/**
+ * Send a single XMODEM packet.
+ *
+ * @param[in] data     The payload of the packet. Must not be null.
+ * @param[in] data_len The length of the payload. Must be at most 128 bytes.
+ *		       If less, (random) padding is automatically added.
+ * @param[in] pkt_no   The desired packet sequence number.
+ *
+ * @return Resulting status code.
+ * @retval 0 Success (only possible retval for now).
+ */
+static int xmodem_send_pkt(const uint8_t *data, size_t data_len, uint8_t pkt_no)
 {
+	size_t i;
+	uint8_t *buf;
+	uint16_t crc;
 
-    char buffer[BUFFER_MAX];
-    ssize_t bytes_written;
-    int fd;
+	printd("xmodem_send_pkt(): pkt_no: %d\n", pkt_no);
+	pkt_buf.soh = SOH;
+	memcpy(pkt_buf.data, data, data_len);
+	//crc = fm_crc16_ccitt(pkt_buf.data, PACKET_PAYLOAD_SIZE);
+	crc = crc16_ccitt(pkt_buf.data, PACKET_PAYLOAD_SIZE);
+	pkt_buf.crc_u8[0] = (crc >> 8) & 0xFF;
+	pkt_buf.crc_u8[1] = crc & 0xFF;
+	pkt_buf.seq_no = pkt_no;
+	pkt_buf.seq_no_inv = ~pkt_no;
+	buf = (uint8_t *)&pkt_buf;
+	/* Send the packet */
+	for (i = 0; i < sizeof(pkt_buf); i++) {
+		//xmodem_io_putc(&buf[i]);
+		emAfBootloadSendByte(buf[i]);
+	}
 
-    fd = open("/sys/class/gpio/export", O_WRONLY);
-    if (-1 == fd)
-    {
-        fprintf(stderr, "Failed to open export for writing!\n");
-        return(-1);
-    }
-
-    bytes_written = snprintf(buffer, BUFFER_MAX, "%d", pin);
-    write(fd, buffer, bytes_written);
-    close(fd);
-    return(0);
+	return 0;
 }
 
-static int
-GPIOUnexport(int pin)
+/**
+ * Try to send an XMODEM packet for MAX_RETRANSMIT times.
+ *
+ * This function sends an XMODEM packet and checks if an ACK is received. If no
+ * ACK is received, the packet is retransmitted. This is done until
+ * 'MAX_RETRANSMIT' is exceeded.
+ *
+ * @param[in] data     The payload of the packet. Must not be null.
+ * @param[in] data_len The length of the payload. Must be at most 128 bytes.
+ *		       If less, (random) padding is automatically added.
+ * @param[in] pkt_no   The packet sequence number.
+ *
+ * @return Exit status.
+ * @retval 0  Success, the packet has been transmitted and an ACK received.
+ * @retval -1 Error, retransmit count exceeded.
+ */
+static int xmodem_send_pkt_with_retry(const uint8_t *data, size_t data_len,
+				      uint8_t pkt_no)
 {
-    char buffer[BUFFER_MAX];
-    ssize_t bytes_written;
-    int fd;
+	uint8_t retransmit = MAX_RETRANSMIT;
+	uint8_t rsp;
 
-    fd = open("/sys/class/gpio/unexport", O_WRONLY);
-    if (-1 == fd)
-    {
-        fprintf(stderr, "Failed to open unexport for writing!\n");
-        return(-1);
-    }
+	printd("xmodem_send_pkt_with_retry(): pkt_no: %d\n", pkt_no);
+	while (retransmit--) {
+		xmodem_send_pkt(data, data_len, pkt_no);
+		rsp = ERR;
+		//xmodem_io_getc(&rsp);
+		emAfBootloadWaitChar(&rsp, 0, 0);
+		if (rsp == ACK) {
+			printd("xmodem_send_pkt_with_retry(): done\n");
+			return 0;
+		}
+		printd("xmodem_send_pkt_with_retry(): failure (%d)\n",
+		       retransmit);
+	}
 
-    bytes_written = snprintf(buffer, BUFFER_MAX, "%d", pin);
-    write(fd, buffer, bytes_written);
-    close(fd);
-    return(0);
+	return -1;
 }
 
-static int
-GPIODirection(int pin, int dir)
+/**
+ * Try to send a byte for MAX_RETRANSMIT times.
+ *
+ * This function sends a byte (typically an XMODEM control byte) and checks if
+ * an ACK is received. If no ACK is received, the byte is retransmitted. This is
+ * done until 'MAX_RETRANSMIT' is exceeded.
+ *
+ * @param[in] cmd The byte to send.
+ *
+ * @return Exit status.
+ * @retval 0  Success, the byte has been transmitted and an ACK received.
+ * @retval -1 Error, retransmit count exceeded.
+ */
+static int xmodem_send_byte_with_retry(uint8_t cmd)
 {
-    static const char s_directions_str[]  = "in\0out";
+	uint8_t retransmit = MAX_RETRANSMIT;
+	uint8_t rsp;
 
-#define DIRECTION_MAX 35
-    char path[DIRECTION_MAX];
-    int fd;
+	while (retransmit--) {
+		//xmodem_io_putc(&cmd);
+		emAfBootloadSendByte(cmd);
+		rsp = ERR;
+		//xmodem_io_getc(&rsp);
+		emAfBootloadWaitChar(&rsp, 0, 0);
+		if (rsp == ACK) {
+			return 0;
+		}
+	}
 
-    snprintf(path, DIRECTION_MAX, "/sys/class/gpio/gpio%d/direction", pin);
-    fd = open(path, O_WRONLY);
-    if (-1 == fd)
-    {
-        fprintf(stderr, "Failed to open gpio direction for writing!\n");
-        return(-1);
-    }
-
-    if (-1 == write(fd, &s_directions_str[IN == dir ? 0 : 3], IN == dir ? 2 : 3))
-    {
-        fprintf(stderr, "Failed to set direction!\n");
-        return(-1);
-    }
-
-    close(fd);
-    return(0);
+	return -1;
 }
 
-static int
-GPIORead(int pin)
+/*
+ * Receive an XMODEM packet.
+ *
+ * @param[in] exp_seq_no The expected sequence number of the packet to be
+ * 			 received.
+ * @param[in] data       The buffer where to store the packet payload. Must not
+ *			 be null.
+ * @param[in] len        The size of the buffer.
+ *
+ * @return Status code.
+ * @retval SOH The packet has been successful received.
+ * @retval DUP The received packet is a duplicate of the previous one (based on
+ *             the expected sequence number); nothing has been written to the
+ *             data buffer.
+ * @retval ERR An error has occurred (either a timeout or the reception of
+ * 	       invalid / corrupted data), but the XMODEM session is not
+ *	       compromised.
+ * @retval CAN An unrecoverable error has occurred (either the sender and
+ *	       receiver have lost sync or the passed buffer is too small).
+ * @retval EOT The sender notified the end of transmission (i.e., there are no
+ *	       more packets to receive).
+ */
+static int xmodem_read_pkt(uint8_t exp_seq_no, uint8_t *data, size_t len)
 {
-#define VALUE_MAX 30
-    char path[VALUE_MAX];
-    char value_str[3];
-    int fd;
+	uint8_t cmd;
+	uint16_t crc_recv; /* received CRC */
+	uint16_t crc_comp; /* computed CRC */
+	uint8_t *buf;
+	uint8_t *buf_end;
 
-    snprintf(path, VALUE_MAX, "/sys/class/gpio/gpio%d/value", pin);
-    fd = open(path, O_RDONLY);
-    if (-1 == fd)
-    {
-        fprintf(stderr, "Failed to open gpio value for reading!\n");
-        return(-1);
-    }
+	cmd = ERR;
 
-    if (-1 == read(fd, value_str, 3))
-    {
-        fprintf(stderr, "Failed to read value!\n");
-        return(-1);
-    }
+	/*
+	 * Wait for a character from the sender; if getc() timeouts (or fails
+	 * due to an I/O error) return error.
+	 */
+	//if (xmodem_io_getc(&cmd) < 0) {
+	if (emAfBootloadWaitChar(&cmd, 0, 0) < 0) {
+		return ERR;
+	}
 
-    close(fd);
+	/* The first char we receive should be either SOH or EOT. */
+	switch (cmd) {
+	case SOH:
+		/*
+		 * A new packet is arriving, jump to the code for handing it
+		 * (just after this switch-case block).
+		 */
+		printd("xmodem_read_pkt(): cmd: SOH\n");
+		break;
+	case EOT:
+		/*
+		 * The previous packet we received was the last one.
+		 * Transmission is completed.
+		 */
+		printd("xmodem_read_pkt(): cmd: EOT\n");
+		return EOT;
+	default:
+		/*
+		 * Unexpected cmd case.
+		 *
+		 * This includes the case of a corrupted/lost SOH; therefore,
+		 * we should check if other bytes are arriving and, in case,
+		 * discard them before returning (and replying with a NAK).
+		 *
+		 * This is the purpose of the following loop.
+		 */
+		printd("xmodem_read_pkt(): cmd: unexpected ctrl byte (0x%x)\n",
+		       cmd);
+		/* Wait until the sender stops sending bytes */
+		//while (xmodem_io_getc(&cmd) >= 0) {
+		while (emAfBootloadWaitChar(&cmd, 0, 0) >= 0) {
+			/*
+			 * Loop until we timeout
+			 *
+			 * NOTE: a special small timeout value should actually
+			 * be used; however, we do not do that in the target
+			 * for footprint minimization purposes.
+			 *
+			 * IMPORTANT: This choice forces the target to use a
+			 * timeout value smaller than the one used by the host,
+			 * otherwise we may end up in a communication loop if
+			 * for some reason both the target and the host enters
+			 * reception mode (because both will send and discard
+			 * NAKs).
+			 */
+		}
+		return ERR;
+	}
 
-    return(atoi(value_str));
+	/* Read the rest of the packet (seq_no, ~seq_no, data, and CRC). */
+	/* Start from seq_no, since we have already read SOH. */
+	buf = (uint8_t *)&pkt_buf.seq_no;
+	/* Compute end of buffer. */
+	buf_end = (uint8_t *)(&pkt_buf + 1);
+	while (buf < buf_end) {
+		//if (xmodem_io_getc(buf++) < 0) {
+		if (emAfBootloadWaitChar(buf++, 0, 0)< 0) {
+			printd("xmodem_read_pkt(): pkt: ERROR: timeout\n");
+			printd("----\n");
+			/* This is a timeout error */
+			return ERR;
+		}
+	}
+
+	/* Check sequence number fields and CRC */
+	//crc_comp = fm_crc16_ccitt(pkt_buf.data, PACKET_PAYLOAD_SIZE);
+	crc_comp = crc16_ccitt(pkt_buf.data, PACKET_PAYLOAD_SIZE);
+	crc_recv = (pkt_buf.crc_u8[0] << 8) | pkt_buf.crc_u8[1];
+	/*
+	 * NOTE: Using 'a == (~a &FF)' instead of 'a == ~a', since the latter
+	 * leads to a compilation error due to the following GCC bug:
+	 * https://gcc.gnu.org/bugzilla/show_bug.cgi?id=38341
+	 */
+	if ((pkt_buf.seq_no != (~pkt_buf.seq_no_inv & 0xFF)) ||
+	    (crc_recv != crc_comp)) {
+		printd("xmodem_read_pkt(): pkt: ERROR: corrupted packet\n");
+		return ERR;
+	}
+	/* Check packet numbers. */
+	if ((pkt_buf.seq_no == (exp_seq_no - 1))) {
+		printd("xmodem_read_pkt(): pkt: WARNING duplicated packet\n");
+		return DUP;
+	}
+	if (pkt_buf.seq_no != exp_seq_no) {
+		printd("xmodem_read_pkt(): pkt: ERROR: wrong seq number\n");
+		return CAN;
+	}
+
+	/*
+	 * If we reach this point, the packet is the expected one and it has
+	 * been correctly received: now we can check that the user output
+	 * buffer is big enough to hold the payload (Note: this check should
+	 * not be anticipated, otherwise we risk to return a CAN in case of a
+	 * simple EOT from the sender).
+	 */
+	if (len < sizeof(pkt_buf.data)) {
+		printd("xmodem_read_pkt(): pkt: "
+		       "ERROR: user buffer out of space\n");
+		return CAN;
+	}
+	memcpy(data, pkt_buf.data, sizeof(pkt_buf.data));
+	printd("xmodem_read_pkt(): pkt: received correctly\n");
+
+	return SOH;
 }
 
-static int
-GPIOWrite(int pin, int value)
+/*
+ * Receive data using XMODEM.
+ *
+ * The device starts sending 'C' (i.e., NAKs) to let the sender know that it is
+ * ready for reception. When the sender replies the communication starts.
+ */
+int xmodem_receive_package(uint8_t *buf, size_t buf_len)
 {
-    static const char s_values_str[] = "01";
-    char path[VALUE_MAX];
-    int fd;
+	int status;
+	uint8_t exp_seq_no;
+	uint8_t nak;
+	uint8_t cmd;
+	int retv;
+	int data_cnt;
+	int err_cnt;
 
-    snprintf(path, VALUE_MAX, "/sys/class/gpio/gpio%d/value", pin);
-    fd = open(path, O_WRONLY);
-    if (-1 == fd)
-    {
-        fprintf(stderr, "Failed to open gpio value for writing!\n");
-        return(-1);
-    }
+	/* XMODEM sequence number starts from 1 */
+	exp_seq_no = 1;
+	/* Reception is started by sending a 'C' */
+	cmd = 'C';
+	/*
+	 * Until the first packet is received (i.e., the XMODEM transfer is
+	 * started), we must nak with a 'C' instead of a regular NAK
+	 * [this is an XMODEM-CRC peculiarity]
+	 */
+	nak = 'C';
 
-    if (1 != write(fd, &s_values_str[LOW == value ? 0 : 1], 1))
-    {
-        fprintf(stderr, "Failed to write value!\n");
-        return(-1);
-    }
+	err_cnt = 0;
+	data_cnt = 0;
+	retv = -1;
+	while (err_cnt < MAX_RX_ERRORS) {
+		printd("xmodem_receive(): sending cmd: %x\n", cmd);
+		/* Send control byte (ACK, CAN, NAK, 'C'). */
+		//xmodem_io_putc(&cmd);
+		emAfBootloadSendByte(cmd);
+		/* Wait for incoming packet. */
+		status = xmodem_read_pkt(exp_seq_no, &buf[data_cnt], buf_len);
+		switch (status) {
+		case SOH:
+			/* Packet successfully received. */
+			nak = NAK;
+			data_cnt += sizeof(pkt_buf.data);
+			buf_len -= sizeof(pkt_buf.data);
+			exp_seq_no++;
+			err_cnt = 0;
+		/* no 'break' on purpose */
+		case DUP:
+			/*
+			 * Duplicated packet received.
+			 *
+			 * We must acknowledge duplicated packets to have the
+			 * sender transmit the next packet.
+			 */
+			cmd = ACK;
+			break;
+		case EOT:
+			/*
+			 * End-of-Transmission (sender has no more packets to
+			 * send.
+			 */
+			cmd = ACK;
+			retv = data_cnt;
+			goto exit;
+		case CAN:
+			/*
+			 * Sender has canceled transmission or an unrecoverable
+			 * error has happened.
+			 */
+			cmd = CAN;
+			goto exit;
+		default:
+			/* A timeout or a recoverable error has happened. */
+			err_cnt++;
+			cmd = nak;
+		}
+	}
+exit:
+	if (retv < 0) {
+		printd("xmodem_receive(): ERROR: reception failed\n");
+	}
+	/* Send the last control bytes acknowledging EOT or CAN. */
+	//xmodem_io_putc(&cmd);
+	emAfBootloadSendByte(cmd);
 
-    close(fd);
-    return(0);
+	return retv;
 }
 
-int resetNcp()
+/*
+ * Send data using XMODEM.
+ *
+ * The device waits for the receiver to send the first NAK ('C') and then
+ * starts the transmission (sending the data in 128-byte packets).
+ */
+int xmodem_transmit_package(const uint8_t *data, size_t len)
 {
-    int repeat = 1;
-    /*
-     * Enable GPIO pins
-     */
-    if (-1 == GPIOExport(PINCONFIG) || -1 == GPIOExport(PINRESET))
-    {
-        return(1);
-    }
+	int mlen;
+	uint8_t retransmit;
+	uint8_t rsp;
+	uint8_t pkt_no;
 
-    /*
-     * Set GPIO directions
-     */
-    if (-1 == GPIODirection(PINCONFIG, OUT) || -1 == GPIODirection(PINRESET, OUT))
-    {
-        return(2);
-    }
+	retransmit = MAX_RETRANSMIT;
 
-    do
-    {
-        /*
-         * Write GPIO value
-         */
-        if (-1 == GPIOWrite(PINCONFIG, LOW))
-        {
-            return(3);
-        }
+	/*
+	 * Wait for the first 'C' from the receiver and then jump to
+	 * transmission; return error if no 'C' is received after
+	 * MAX_RETRANSMIT attempts.
+	 */
+	while (retransmit--) {
+		printd("xmodem_transmit(): waiting for 'C' (%d)\n", retransmit);
+		rsp = ERR;
+		/* If getc() timeouts rsp value is not changed. */
+		//xmodem_io_getc(&rsp);
+		emAfBootloadWaitChar(&rsp, 0, 0);
+		if (rsp == 'C') {
+			goto start_transmit;
+		}
+	}
 
-        usleep(500 * 1000);
-        if (-1 == GPIOWrite(PINRESET, LOW))
-        {
-            return(4);
-        }
+	return -1;
 
-        usleep(500 * 1000);
-        if (-1 == GPIOWrite(PINRESET, HIGH))
-        {
-            return(5);
-        }
+start_transmit:
+	printd("xmodem_transmit(): starting transmission\n");
+	pkt_no = 1;
+	/* Send packets as long as there is data to send. */
+	while (len) {
+		/* Packet length must be <= 128 bytes. */
+		mlen =
+		    (len >= sizeof(pkt_buf.data)) ? sizeof(pkt_buf.data) : len;
+		if (xmodem_send_pkt_with_retry(data, mlen, pkt_no) < 0) {
+			return -1;
+		}
+		data += mlen;
+		len -= mlen;
+		pkt_no++;
+	}
+	/* Send End-of-Transmission constrol byte. */
+	if (xmodem_send_byte_with_retry(EOT) < 0) {
+		return -1;
+	}
 
-    }
-    while (repeat--);
-
-    /*
-     * Disable GPIO pins
-     */
-    sleep(2);
-    if (-1 == GPIOUnexport(PINCONFIG) || -1 == GPIOUnexport(PINRESET))
-    {
-        return(6);
-    }
-
-    return(0);
+	return 0;
 }
-
-int exitNcp()
-{
-    int repeat = 1;
-    /*
-     * Enable GPIO pins
-     */
-    if (-1 == GPIOExport(PINCONFIG) || -1 == GPIOExport(PINRESET))
-    {
-        return(1);
-    }
-
-    /*
-     * Set GPIO directions
-     */
-    if (-1 == GPIODirection(PINCONFIG, OUT) || -1 == GPIODirection(PINRESET, OUT))
-    {
-        return(2);
-    }
-
-    do
-    {
-        /*
-         * Write GPIO value
-         */
-        if (-1 == GPIOWrite(PINCONFIG, LOW))
-        {
-            return(3);
-        }
-
-        usleep(500 * 1000);
-        if (-1 == GPIOWrite(PINRESET, LOW))
-        {
-            return(4);
-        }
-
-        usleep(500 * 1000);
-        if (-1 == GPIOWrite(PINRESET, HIGH))
-        {
-            return(5);
-        }
-
-    }
-    while (repeat--);
-
-    /*
-     * Disable GPIO pins
-     */
-    sleep(1);
-    if (-1 == GPIOUnexport(PINCONFIG) || -1 == GPIOUnexport(PINRESET))
-    {
-        return(6);
-    }
-
-    return(0);
-}
-
-
-int main()
-{
-    printf("start app \n");
-    //int ret  = resetNcp();
-    //printf("reset ncp ret = %d \n",ret);
-
-
-    if(emberAfOtaBootloadCallback())
-    {
-        //	printf("restart ncp \n");
-        //exitNcp();
-    }
-    return 1;
-}
-

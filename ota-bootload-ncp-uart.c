@@ -1,6 +1,7 @@
 
 #include <sys/select.h>
 #include "ota-bootload-ncp.h"
+#include "ota-bootload-ncp-uart.h"
 
 //------------------------------------------------------------------------------
 // Globals

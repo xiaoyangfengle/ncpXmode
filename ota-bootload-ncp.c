@@ -16,7 +16,8 @@
  ******************************************************************************/
 
 #include "ota-bootload-ncp.h"
-#include "ota-bootload-xmodem.h"
+//#include "ota-bootload-xmodem.h"
+#include "xmodem.h"
 
 //------------------------------------------------------------------------------
 // Globals
@@ -118,16 +119,23 @@ static bool transferFile()
         printf("read_data success length:%d\n",length);
     }
 
-    emAfInitXmodemState(START_IMMEDIATELY);
 
-    if (!emAfSendXmodemData(buf,length,true))
-    {
-        // finish?
-        printf("Failed to send data to NCP.");
-        //emberAfCoreFlush();
-        return false;
-    }
-
+	if(xmodem_transmit_package(buf, length))
+	{
+        printf("xmodem trans err,exit");
+		return false;
+	}
     printf("Transfer completed successfully.");
+
+
+//    emAfInitXmodemState(START_IMMEDIATELY);
+
+//    if (!emAfSendXmodemData(buf,length,true))
+//    {
+//        // finish?
+//        printf("Failed to send data to NCP.");
+//        //emberAfCoreFlush();
+//        return false;
+//    }
     return true;
 }
