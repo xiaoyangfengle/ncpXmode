@@ -167,7 +167,7 @@ bool emAfStartNcpBootloaderCommunications(void)
 //        return false;
 //    }
 
-	serialFd = open_serial("/dev/ttyS17", 115200);
+	serialFd = open_serial("/dev/ttyUSB0", 115200);
 
 
     if(!emAfBootloadSendByte(beginDownload))
@@ -593,41 +593,6 @@ static int checkFdForData(void)
 //  arrive
 bool emAfBootloadWaitChar(uint8_t *data, bool expect, uint8_t expected)
 {
-    /*
-      int tryTimes = 1;
-      do
-      {
-         int status = checkFdForData();
-        if (status <= 0) {
-          // Timeout or error
-          printf("emAfBootloadWaitChar timeout \n");
-          continue;
-        }
-
-        ssize_t bytes = read(serialFd, data, 1);
-        if (bytes < 0) {
-          printf("Read failed: %s\n", strerror(errno));
-          continue;
-        }
-
-        // debug
-       printf("Got <%c,%x>\n", (char)*data, (char)*data);
-
-        if (expect)
-         {
-          if(((*data) == expected))
-          {
-            return true;
-          }
-          else{
-            continue;
-          }
-        } else {
-          return true;
-        }
-      } while (tryTimes--);
-      return false;
-    */
     int status = checkFdForData();
     if (status <= 0)
     {

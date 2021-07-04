@@ -466,6 +466,7 @@ start_transmit:
 		data += mlen;
 		len -= mlen;
 		pkt_no++;
+		usleep(50);
 	}
 	/* Send End-of-Transmission constrol byte. */
 	if (xmodem_send_byte_with_retry(EOT) < 0) {
