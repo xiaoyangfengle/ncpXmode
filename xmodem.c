@@ -57,7 +57,7 @@
 #define PACKET_PAYLOAD_SIZE (XMODEM_BLOCK_SIZE)
 
 /* Activate debug messages by defining DEBUG_MSG to 1 */
-#define DEBUG_MSG (0)
+#define DEBUG_MSG (1)
 
 #if DEBUG_MSG
 #define printd(...) printf(__VA_ARGS__)

@@ -54,7 +54,7 @@ static uint8_t ttydev[] = "/dev/ttyS17";
 #define ASH_HOST_CONFIG_DEFAULT                                                   \
   {                                                                               \
     "/dev/ttyS17",       /* serial port name                                  */   \
-    38400,             /* baud rate (bits/second)                           */   \
+    115200,             /* baud rate (bits/second)                           */   \
     1,                  /* stop bits                                         */   \
     false,               /* true enables RTS/CTS flow control, false XON/XOFF */   \
     256,                /* max bytes to buffer before writing to serial port */   \
@@ -105,28 +105,77 @@ typedef struct
 AshHostConfig ashHostConfig = ASH_HOST_CONFIG_DEFAULT;
 
 
+
+static int open_serial(const char *path, int baud)
+{
+    int fd;
+    struct termios tty;
+
+    fd = open(path, O_RDWR | O_SYNC);
+    if (fd < 0)
+    {
+        perror("open");
+        return -errno;
+    }
+
+    memset(&tty, 0, sizeof(tty));
+    if (tcgetattr(fd, &tty) != 0)
+    {
+        perror("tcgetattr");
+        return -errno;
+    }
+
+    cfsetospeed(&tty, baud);
+    cfsetispeed(&tty, baud);
+
+    tty.c_cflag = (tty.c_cflag & ~CSIZE) | CS8;     // 8-bit chars
+    tty.c_iflag &= ~IGNBRK;                         // disable break processing
+    tty.c_lflag = 0;                                // no signaling chars, no echo,
+    // no canonical processing
+    tty.c_oflag = 0;                                // no remapping, no delays
+    tty.c_cc[VMIN]  = 1;                            // read doesn't block
+    tty.c_cc[VTIME] = 5;                            // 0.5 seconds read timeout
+
+    tty.c_iflag &= ~(IXON | IXOFF | IXANY);         // shut off xon/xoff ctrl
+
+    tty.c_cflag |= (CLOCAL | CREAD);                // ignore modem controls,
+    // enable reading
+    tty.c_cflag &= ~(PARENB | PARODD);              // shut off parity
+    tty.c_cflag &= ~CSTOPB;
+    tty.c_cflag &= ~CRTSCTS;
+
+    if (tcsetattr(fd, TCSANOW, &tty) != 0)
+    {
+        perror("tcsetattr");
+        return -errno;
+    }
+
+    return fd;
+}
+
+
+
 bool emAfStartNcpBootloaderCommunications(void)
 {
     serialFd = NULL_FILE_DESCRIPTOR;
-    char errorString[MAX_ERROR_LENGTH];
-    int tryTimes = 1;
-    bool ret = false;
 
     printf("emAfStartNcpBootloaderCommunications\r\n");
 
-    if (!uart_init())
-    {
-        printf("Error: Could not setup serial port\r\n");
-		return false;
-    }
+//    if (!uart_init())
+//    {
+//        printf("Error: Could not setup serial port\r\n");
+//        return false;
+//    }
+
+	serialFd = open_serial("/dev/ttyS17", 115200);
 
 
-    if(!emAfBootloadSendByte(beginDownload))   //发送‘1’；
+    if(!emAfBootloadSendByte(beginDownload))
     {
         errorPrint("Failed to set bootloader in download mode.\n");
         return false;
     }
-	
+
     return checkForXmodemStart();
 
 }
@@ -254,13 +303,6 @@ static bool checkForBootloaderMenu(void)
             return false;
         }
     }
-    tcflush(serialFd, TCIFLUSH);
-    // while(checkFdForData()>0)
-    // {
-    //     uint8_t data;
-    //     ssize_t bytes = read(serialFd, &data, 1);
-    //     printf("Got checkFdForData<%c,%x>\n", (char)data, (char)data);
-    // }
     return true;
 }
 
@@ -297,6 +339,7 @@ static void storeReceivedByte(uint8_t newByte)
     }
     receivedBytesCache[i] = newByte;
 }
+
 
 int init_tty(int fd)
 {
@@ -445,8 +488,8 @@ int init_tty1(int fd)
 
     cfmakeraw(&termios_rfid);//设置终端属性，激活选项
 
-    cfsetispeed(&termios_rfid, B38400);//输入波特率
-    cfsetospeed(&termios_rfid, B38400);//输出波特率
+    cfsetispeed(&termios_rfid, B115200);//输入波特率
+    cfsetospeed(&termios_rfid, B115200);//输出波特率
 
     termios_rfid.c_cflag |= CLOCAL | CREAD;//本地连接和接收使能
 
@@ -473,9 +516,6 @@ int init_tty1(int fd)
 
 int uart_init()
 {
-    int rv = -1;
-    struct termios options;
-
     serialFd = open(ttydev,O_RDWR | O_NOCTTY | O_NONBLOCK);
 
     if(serialFd < 0)
@@ -484,13 +524,14 @@ int uart_init()
         return -1;
     }
 
-    //tcflush(serialFd, TCIOFLUSH);       // flush all input and output data
-    //fcntl(serialFd, F_SETFL, FNDELAY);
+    tcflush(serialFd, TCIOFLUSH);       // flush all input and output data
+    fcntl(serialFd, F_SETFL, FNDELAY);
 
     if(init_tty(serialFd) == -1)
     {
         printf("init_tty in failed!\n");
     }
+
     return true;
 }
 

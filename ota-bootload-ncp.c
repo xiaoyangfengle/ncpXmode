@@ -52,10 +52,9 @@ bool emberAfOtaBootloadCallback()
     bool success = true;
 
     printf("Starting bootloader communications.\r\n");
-    //emberAfCoreFlush();
+
     if (!emAfStartNcpBootloaderCommunications())
     {
-        success = false;
         printf("Failed to start bootloading communications\n");
         return -1;
     }
@@ -85,7 +84,6 @@ static int read_data(char **result,char *fileName,int *length)
         return 0;
     }
 
-
     if(!(filePointer=fopen(fileName,"rb ")))
     {
         printf("read_data open file fail\n");
@@ -106,9 +104,11 @@ static int read_data(char **result,char *fileName,int *length)
 }
 static bool transferFile()
 {
-    printf("start transferFile\n");
+    printf("Transferring GBL file to NCP..\r\n");
+	
     char  * buf = NULL;
     int length = 0;
+	
     if(read_data(&buf,gbl_file,&length) == 0)
     {
         printf("read_data fail \n");

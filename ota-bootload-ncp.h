@@ -35,7 +35,6 @@ bool emAfBootloadSendData(const uint8_t *data, uint16_t length);
 bool emAfBootloadSendByte(uint8_t byte);
 bool emAfBootloadWaitChar(uint8_t *data, bool expect, uint8_t expected);
 bool emberAfOtaBootloadCallback();
-
 int uart_init();
 
 #endif
