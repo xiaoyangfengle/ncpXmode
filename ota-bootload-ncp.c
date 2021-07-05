@@ -34,7 +34,7 @@
 
 #define START_IMMEDIATELY false
 
-static uint8_t gbl_file[] = "xncp-led_BRD4168A.gbl";
+static uint8_t gbl_file[] = "xncp-led_BRD4180A.gbl";
 
 //------------------------------------------------------------------------------
 // Forward Declarations

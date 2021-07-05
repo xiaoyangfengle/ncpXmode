@@ -53,7 +53,7 @@ static uint8_t ttydev[] = "/dev/ttyS17";
 // Config 0 (default) : EM2xx/EM3xx @ 115200 bps with RTS/CTS flow control
 #define ASH_HOST_CONFIG_DEFAULT                                                   \
   {                                                                               \
-    "/dev/ttyS17",       /* serial port name                                  */   \
+    "/dev/ttyS1",       /* serial port name                                  */   \
     115200,             /* baud rate (bits/second)                           */   \
     1,                  /* stop bits                                         */   \
     false,               /* true enables RTS/CTS flow control, false XON/XOFF */   \
@@ -167,7 +167,7 @@ bool emAfStartNcpBootloaderCommunications(void)
 //        return false;
 //    }
 
-	serialFd = open_serial("/dev/ttyUSB0", 115200);
+	serialFd = open_serial("/dev/ttyS1", 115200);
 
 
     if(!emAfBootloadSendByte(beginDownload))

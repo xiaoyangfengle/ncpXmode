@@ -130,47 +130,6 @@ static bool sendBlock(uint8_t blockNum, const uint8_t *data)
 }
 
 
-/**
- * Try to send an XMODEM packet for MAX_RETRANSMIT times.
- *
- * This function sends an XMODEM packet and checks if an ACK is received. If no
- * ACK is received, the packet is retransmitted. This is done until
- * 'MAX_RETRANSMIT' is exceeded.
- *
- * @param[in] data     The payload of the packet. Must not be null.
- * @param[in] data_len The length of the payload. Must be at most 128 bytes.
- *		       If less, (random) padding is automatically added.
- * @param[in] pkt_no   The packet sequence number.
- *
- * @return Exit status.
- * @retval 0  Success, the packet has been transmitted and an ACK received.
- * @retval -1 Error, retransmit count exceeded.
- */
-static int xmodem_send_pkt_with_retry(const uint8_t *data, size_t data_len,
-				      uint8_t pkt_no)
-{
-	uint8_t retransmit = MAX_RETRANSMIT;
-	uint8_t rsp;
-
-	printf("xmodem_send_pkt_with_retry(): pkt_no: %d\n", pkt_no);
-	while (retransmit--) {
-		xmodem_send_pkt(data, data_len, pkt_no);
-		rsp = ERR;
-		xmodem_io_getc(&rsp);
-		if (rsp == ACK) {
-			printf("xmodem_send_pkt_with_retry(): done\n");
-			return 0;
-		}
-		printf("xmodem_send_pkt_with_retry(): failure (%d)\n",
-		       retransmit);
-	}
-
-	return -1;
-}
-
-
-
-
 void emAfInitXmodemState(bool startImmediately)
 {
     if (startImmediately)
